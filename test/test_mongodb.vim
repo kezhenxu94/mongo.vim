@@ -190,6 +190,7 @@ function! Test_run_statement() abort
   call mongodb#run_statement()
   let out = s:wait_preview()
   call assert_match('^// mongodb://', out[0])
+  call assert_match('^// \d\+\.\d\+s$', out[1])
   call assert_match("_id: 'paid'", join(out))
   call assert_notmatch('// L', join(out))
   call assert_equal('javascript', getbufvar(bufnr('[[]MongoDB]'), '&filetype'))
@@ -202,7 +203,7 @@ function! Test_run_remembers_use() abort
   call setline(1, 'db.getName()')
   call assert_equal('analytics', mongodb#current_db())
   call mongodb#run_statement()
-  call assert_equal('analytics', s:wait_preview()[1])
+  call assert_equal('analytics', s:wait_preview()[2])
   unlet b:mongodb_db
 endfunction
 
@@ -210,7 +211,7 @@ function! Test_stop_mapping() abort
   call s:buf(['sleep(10000)'], 1, 1)
   call mongodb#run_statement()
   execute "normal \<C-c>"
-  call assert_match('· cancelled$', s:wait_preview()[0])
+  call assert_match('· cancelled$', s:wait_preview()[1])
 endfunction
 
 function! Test_run_file() abort
@@ -220,7 +221,7 @@ function! Test_run_file() abort
   call assert_match("// L2: show collections\norders\nproducts\nusers\n// L3: db.users.countDocuments()\n25", join(out, "\n"))
   %MongoRun
   let out = s:wait_preview()
-  call assert_match('exit 1', out[0])
+  call assert_match('exit 1', out[1])
   call assert_match('SyntaxError', join(out))
 endfunction
 

@@ -280,7 +280,7 @@ function! s:execute(stmts) abort
 endfunction
 
 function! s:header(run, status) abort
-  return printf('// %s · %.2fs%s', s:redact(a:run.uri), reltimefloat(reltime(a:run.start)), a:status)
+  return ['// ' . s:redact(a:run.uri), printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)]
 endfunction
 
 " Ignores runs that were cancelled or replaced by a newer one.
@@ -289,7 +289,7 @@ function! s:executed(run, lines, code) abort
     return
   endif
   let s:run = {}
-  call s:preview([s:header(a:run, a:code ? ' · exit ' . a:code : '')] + a:lines)
+  call s:preview(s:header(a:run, a:code ? ' · exit ' . a:code : '') + a:lines)
 endfunction
 
 function! mongodb#stop() abort
@@ -297,7 +297,7 @@ function! mongodb#stop() abort
     return
   endif
   call mongodb#compat#stop(get(s:run, 'job', 0))
-  call s:preview([s:header(s:run, ' · cancelled')])
+  call s:preview(s:header(s:run, ' · cancelled'))
   let s:run = {}
 endfunction
 
@@ -313,9 +313,9 @@ function! s:preview(lines) abort
   let winid = bufwinid(s:preview_buf)
   if winid == -1
     let cur = win_getid()
-    execute 'botright ' . get(g:, 'mongodb_preview_height', max([winheight(0) / 2, 1])) . 'split'
+    execute 'belowright vertical ' . get(g:, 'mongodb_preview_width', max([winwidth(0) / 2, 1])) . 'split'
     execute 'buffer ' . s:preview_buf
-    setlocal filetype=javascript winfixheight nonumber norelativenumber signcolumn=no
+    setlocal filetype=javascript winfixwidth signcolumn=no
     nnoremap <buffer> <silent> q :close<CR>
     nnoremap <buffer> <silent> <C-c> :<C-u>call mongodb#stop()<CR>
     let winid = win_getid()
