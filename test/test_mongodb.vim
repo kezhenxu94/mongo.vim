@@ -87,11 +87,20 @@ endfunction
 
 function! Test_complete_databases() abort
   call s:buf(['use sh'], 1, 7)
+  call mongodb#databases()
   call assert_equal(['shop'], s:words(4))
+endfunction
+
+function! Test_complete_does_not_block() abort
+  call mongodb#refresh()
+  call s:buf(['use sh'], 1, 7)
+  call assert_equal([], s:words(4))
+  call assert_equal(['shop'], filter(mongodb#databases(), 'v:val ==# "shop"'))
 endfunction
 
 function! Test_complete_collections() abort
   call s:buf(['use shop', 'db.'], 2, 4)
+  call mongodb#databases()
   let words = s:words(3)
   call assert_equal(['orders', 'products', 'users'], words[:2])
   call assert_notequal(-1, index(words, 'getSiblingDB'))
@@ -115,6 +124,8 @@ function! Test_complete_operators() abort
 endfunction
 
 function! Test_complete_fields() abort
+  call mongodb#collection('shop', 'users')
+  call mongodb#collection('shop', 'orders')
   call s:buf(['use shop', 'db.users.find({ addr'], 2, 21)
   call assert_equal(['address', 'address.city', 'address.zip'], s:words(16))
   call s:buf(['use shop', 'db.orders.aggregate([{ $group: { _id: "$st'], 2, 43)
@@ -162,6 +173,24 @@ function! Test_run_statement() abort
   call assert_match("_id: 'paid'", join(out))
   call assert_notmatch('// L', join(out))
   call assert_equal('javascript', getbufvar(bufnr('[[]MongoDB]'), '&filetype'))
+endfunction
+
+function! Test_run_remembers_use() abort
+  call s:buf(['use analytics;'], 1, 1)
+  call mongodb#run_statement()
+  call s:wait_preview()
+  call setline(1, 'db.getName()')
+  call assert_equal('analytics', mongodb#current_db())
+  call mongodb#run_statement()
+  call assert_equal('analytics', s:wait_preview()[1])
+  unlet b:mongodb_db
+endfunction
+
+function! Test_stop_mapping() abort
+  call s:buf(['sleep(10000)'], 1, 1)
+  call mongodb#run_statement()
+  execute "normal \<C-c>"
+  call assert_match('· cancelled$', s:wait_preview()[0])
 endfunction
 
 function! Test_run_file() abort

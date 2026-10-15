@@ -21,12 +21,14 @@ nnoremap <buffer> <silent> <Plug>(mongodb-run-statement) :<C-u>call mongodb#run_
 nnoremap <buffer> <silent> <Plug>(mongodb-run-file) :<C-u>%MongoRun<CR>
 xnoremap <buffer> <silent> <Plug>(mongodb-run-selection) :MongoRun<CR>
 nnoremap <buffer> <silent> <Plug>(mongodb-hover) :<C-u>call mongodb#hover()<CR>
+nnoremap <buffer> <silent> <Plug>(mongodb-stop) :<C-u>call mongodb#stop()<CR>
 
 if !get(g:, 'mongodb_no_mappings', 0)
   nmap <buffer> <LocalLeader>rr <Plug>(mongodb-run-statement)
   nmap <buffer> <LocalLeader>rf <Plug>(mongodb-run-file)
   xmap <buffer> <LocalLeader>r <Plug>(mongodb-run-selection)
   nmap <buffer> K <Plug>(mongodb-hover)
+  nmap <buffer> <C-c> <Plug>(mongodb-stop)
 endif
 
 if get(g:, 'mongodb_autocomplete', 1)

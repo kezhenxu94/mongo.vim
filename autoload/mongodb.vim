@@ -1,7 +1,7 @@
 " mongodb.vim: run, preview, hover, completion and metadata.
 
 let s:cache = {}        " uri -> {'dbs': {db: [colls]}, 'colls': {'db.coll': info}, 'job': ...}
-let s:run_job = 0
+let s:run = {}          " running query: {'job', 'uri', 'start'}
 let s:preview_buf = -1
 
 " ---------------------------------------------------------------- settings
@@ -19,7 +19,8 @@ function! s:redact(uri) abort
   return substitute(a:uri, '://[^:@/]*:\zs[^@]*\ze@', '***', '')
 endfunction
 
-" Database in effect at lnum: nearest `use X` above, else the URI path, else test.
+" Database in effect at lnum: nearest `use X` above, else the last `use X`
+" run in this buffer, else the URI path, else test.
 function! mongodb#current_db(...) abort
   let lnum = get(a:000, 0, line('.'))
   while lnum > 0
@@ -29,6 +30,9 @@ function! mongodb#current_db(...) abort
     endif
     let lnum -= 1
   endwhile
+  if !empty(get(b:, 'mongodb_db', ''))
+    return b:mongodb_db
+  endif
   let db = matchstr(mongodb#uri(), '^mongodb\%(+srv\)\=://[^/]*/\zs[^?]\+')
   return empty(db) ? 'test' : db
 endfunction
@@ -216,7 +220,8 @@ function! mongodb#script(stmts) abort
   return join(out, "\n")
 endfunction
 
-" Statements of lines [l1, l2] plus the nearest `use` above them.
+" Statements of lines [l1, l2] plus the nearest `use` above them, else the
+" last `use` run in this buffer.
 function! s:with_context(l1, l2) abort
   let stmts = mongodb#statements(getline(a:l1, a:l2), a:l1)
   if empty(stmts)
@@ -232,6 +237,9 @@ function! s:with_context(l1, l2) abort
       endif
       let lnum -= 1
     endwhile
+    if lnum == 0 && !empty(get(b:, 'mongodb_db', ''))
+      call insert(stmts, {'start': 0, 'end': 0, 'text': 'use ' . b:mongodb_db})
+    endif
   endif
   return stmts
 endfunction
@@ -256,26 +264,40 @@ function! s:execute(stmts) abort
     echohl WarningMsg | echo 'mongodb: nothing to run' | echohl None
     return
   endif
+  for st in a:stmts
+    let m = matchlist(st.text, '^use\s\+\(\S\+\)$')
+    if !empty(m)
+      let b:mongodb_db = m[1]
+    endif
+  endfor
   call mongodb#stop()
-  let uri = mongodb#uri()
-  let start = reltime()
-  call s:preview(['// running on ' . s:redact(uri) . ' … (:MongoStop to cancel)'])
-  let s:run_job = mongodb#compat#job(s:mongosh(uri, mongodb#script(a:stmts)),
-        \ {lines, code -> s:executed(uri, start, lines, code)})
+  let run = {'uri': mongodb#uri(), 'start': reltime()}
+  let s:run = run
+  call s:preview(['// running on ' . s:redact(run.uri) . ' … (<C-c> to cancel)'])
+  let run.job = mongodb#compat#job(s:mongosh(run.uri, mongodb#script(a:stmts)),
+        \ {lines, code -> s:executed(run, lines, code)})
 endfunction
 
-function! s:executed(uri, start, lines, code) abort
-  let s:run_job = 0
-  let header = printf('// %s · %.2fs%s', s:redact(a:uri),
-        \ reltimefloat(reltime(a:start)), a:code ? ' · exit ' . a:code : '')
-  call s:preview([header] + a:lines)
+function! s:header(run, status) abort
+  return printf('// %s · %.2fs%s', s:redact(a:run.uri), reltimefloat(reltime(a:run.start)), a:status)
+endfunction
+
+" Ignores runs that were cancelled or replaced by a newer one.
+function! s:executed(run, lines, code) abort
+  if a:run isnot s:run
+    return
+  endif
+  let s:run = {}
+  call s:preview([s:header(a:run, a:code ? ' · exit ' . a:code : '')] + a:lines)
 endfunction
 
 function! mongodb#stop() abort
-  if mongodb#compat#running(s:run_job)
-    call mongodb#compat#stop(s:run_job)
+  if empty(s:run)
+    return
   endif
-  let s:run_job = 0
+  call mongodb#compat#stop(get(s:run, 'job', 0))
+  call s:preview([s:header(s:run, ' · cancelled')])
+  let s:run = {}
 endfunction
 
 function! s:preview(lines) abort
@@ -294,6 +316,7 @@ function! s:preview(lines) abort
     execute 'buffer ' . s:preview_buf
     setlocal filetype=javascript winfixheight nonumber norelativenumber signcolumn=no
     nnoremap <buffer> <silent> q :close<CR>
+    nnoremap <buffer> <silent> <C-c> :<C-u>call mongodb#stop()<CR>
     let winid = win_getid()
     call win_gotoid(cur)
   endif
@@ -330,7 +353,7 @@ let s:js_db = 'print(EJSON.stringify(db.getSiblingDB(%s).stats()))'
 function! s:meta() abort
   let uri = mongodb#uri()
   if !has_key(s:cache, uri)
-    let s:cache[uri] = {'dbs': {}, 'colls': {}, 'loaded': 0, 'job': 0}
+    let s:cache[uri] = {'dbs': {}, 'colls': {}, 'loaded': 0, 'job': 0, 'coll_jobs': {}}
   endif
   return s:cache[uri]
 endfunction
@@ -376,6 +399,7 @@ function! s:dbs_loaded(meta, dbs) abort
   let a:meta.dbs = a:dbs
   let a:meta.loaded = 1
   call mongodb#highlight_all()
+  call s:refresh_menu()
 endfunction
 
 function! mongodb#refresh() abort
@@ -401,10 +425,22 @@ function! mongodb#collection(db, coll, ...) abort
   let meta = s:meta()
   let key = a:db . '.' . a:coll
   if !has_key(meta.colls, key)
-    call s:query(printf(s:js_coll, json_encode(a:db), json_encode(a:coll)),
-          \ {r -> extend(meta.colls, {key: r})}, 1)
+    let job = get(meta.coll_jobs, key, 0)
+    if !mongodb#compat#running(job)
+      let job = s:query(printf(s:js_coll, json_encode(a:db), json_encode(a:coll)),
+            \ {r -> s:coll_loaded(meta, key, r)}, 0)
+      let meta.coll_jobs[key] = job
+    endif
+    if get(a:000, 0, 1)
+      call mongodb#compat#wait(job, get(g:, 'mongodb_timeout', 5000))
+    endif
   endif
   return get(meta.colls, key, {})
+endfunction
+
+function! s:coll_loaded(meta, key, info) abort
+  let a:meta.colls[a:key] = a:info
+  call s:refresh_menu()
 endfunction
 
 " ------------------------------------------------------------- completion
@@ -470,11 +506,11 @@ function! s:candidates(kind) abort
   let db = mongodb#current_db()
   let items = []
   if a:kind ==# 'dbs'
-    call map(mongodb#databases(), 'add(items, s:item(v:val, "d", "[db]"))')
+    call map(mongodb#databases(0), 'add(items, s:item(v:val, "d", "[db]"))')
   elseif a:kind ==# 'show'
     call map(['dbs', 'databases', 'collections', 'tables', 'users'], 'add(items, s:item(v:val, "k", "[show]"))')
   elseif a:kind ==# 'db'
-    call map(mongodb#collections(db), 'add(items, s:item(v:val, "t", "[" . db . "]"))')
+    call map(mongodb#collections(db, 0), 'add(items, s:item(v:val, "t", "[" . db . "]"))')
     call map(sort(keys(docs.db)), 'add(items, s:item(v:val, "f", "[db]", docs.db[v:val]))')
   elseif a:kind ==# 'collection'
     call map(sort(keys(docs.collection)), 'add(items, s:item(v:val, "f", "[collection]", docs.collection[v:val]))')
@@ -485,7 +521,7 @@ function! s:candidates(kind) abort
   elseif a:kind ==# 'field' || a:kind ==# 'fieldref'
     let coll = s:stmt_collection()
     if !empty(coll)
-      let fields = get(mongodb#collection(db, coll), 'fields', {})
+      let fields = get(mongodb#collection(db, coll, 0), 'fields', {})
       call map(sort(keys(fields)), 'add(items, extend(s:item(v:val, "v", join(fields[v:val], "|")), {"user_data": a:kind}))')
     endif
   else
@@ -497,8 +533,22 @@ function! s:candidates(kind) abort
 endfunction
 
 " Called on TextChangedI: open the menu after `use `, `db.`, `.`, `$` etc.
+" Metadata loads in the background; the menu is refreshed when it arrives.
 function! mongodb#autocomplete() abort
-  if pumvisible() || mode() !=# 'i'
+  if !pumvisible()
+    call s:show_menu()
+  endif
+endfunction
+
+" Metadata arrived: redo the menu if still typing in a mongodb buffer.
+function! s:refresh_menu() abort
+  if &filetype ==# 'mongodb' && get(g:, 'mongodb_autocomplete', 1)
+    call s:show_menu()
+  endif
+endfunction
+
+function! s:show_menu() abort
+  if mode() !=# 'i'
     return
   endif
   let pre = strpart(getline('.'), 0, col('.') - 1)

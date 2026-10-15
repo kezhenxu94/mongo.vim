@@ -18,7 +18,8 @@ The URI is the first non-empty of: |b:mongodb_uri|, |g:mongodb_uri|,
 $MONGODB_URI, "mongodb://localhost:27017".
 
 The current database is the nearest `use <db>` above the cursor, else the
-database in the URI path, else "test".
+last `use <db>` run in the buffer, else the database in the URI path, else
+"test".
 
 ==============================================================================
 2. COMMANDS AND MAPPINGS                                *mongodb-commands*
@@ -34,14 +35,16 @@ database in the URI path, else "test".
                                                           *:MongoRefresh*
 :MongoConnect [uri]       Set |g:mongodb_uri| and reload.   *:MongoConnect*
 
-The nearest `use <db>` above the code is applied. Results go to the
-[MongoDB] window (filetype javascript); press q there to close it.
+The current database (see |mongodb-connection|) is applied. Results go to the
+[MongoDB] window (filetype javascript); press q there to close it, <C-c>
+to cancel the running query.
 
 Default buffer mappings (disable with |g:mongodb_no_mappings|):
   <LocalLeader>rr   <Plug>(mongodb-run-statement)
   <LocalLeader>rf   <Plug>(mongodb-run-file)
   {Visual}<LocalLeader>r   <Plug>(mongodb-run-selection)
   K                 <Plug>(mongodb-hover)
+  <C-c>             <Plug>(mongodb-stop)
 
 ==============================================================================
 3. COMPLETION AND HOVER                               *mongodb-completion*
@@ -66,7 +69,7 @@ detection use treesitter (see |g:mongodb_treesitter|).
 *b:mongodb_uri*            Per-buffer connection string.
 *g:mongodb_mongosh*        mongosh executable. Default 'mongosh'.
 *g:mongodb_preview_height* Height of the results window. Default 15.
-*g:mongodb_timeout*        Milliseconds to wait for metadata. Default 5000.
+*g:mongodb_timeout*        Milliseconds hover waits for metadata. Default 5000.
 *g:mongodb_autocomplete*   Open completion as you type. Default 1.
 *g:mongodb_treesitter*     Use treesitter in Neovim. Default 1.
 *g:mongodb_no_mappings*    Skip default mappings. Default 0.

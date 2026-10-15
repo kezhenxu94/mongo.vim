@@ -8,7 +8,7 @@ No plugin dependencies. No LSP server to install. No Node toolchain. Just `mongo
 
 ## Features
 
-- **Run the statement under the cursor**: `<LocalLeader>rr` finds the whole statement, even across several lines (chained `.sort().limit()`, multi-line pipelines), and runs it. The nearest `use <db>` above it is applied automatically.
+- **Run the statement under the cursor**: `<LocalLeader>rr` finds the whole statement, even across several lines (chained `.sort().limit()`, multi-line pipelines), and runs it. The nearest `use <db>` above it is applied automatically, else the last `use <db>` you ran in that buffer.
 - **Results in a preview pane**: output lands in a reusable `[MongoDB]` split with `javascript` highlighting, and each statement's result is labelled. Press `q` to close it.
 - **Schema-aware completion**: it pops up as you type.
   | You type | You get |
@@ -78,11 +78,11 @@ Passwords are masked as `***` in the results header.
 | `<LocalLeader>rf` | `:MongoRun` | run the whole buffer |
 | `<LocalLeader>r` (visual) | `:'<,'>MongoRun` | run the selection |
 | `K` | `:MongoHover` | hover docs |
-| | `:MongoStop` | cancel the running query |
+| `<C-c>` | `:MongoStop` | cancel the running query (also in the results window) |
 | | `:MongoRefresh` | reload databases, collections and schemas |
 | | `:MongoConnect [uri]` | switch server |
 
-To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongodb-run-statement)`, `<Plug>(mongodb-run-file)`, `<Plug>(mongodb-run-selection)` and `<Plug>(mongodb-hover)` targets.
+To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongodb-run-statement)`, `<Plug>(mongodb-run-file)`, `<Plug>(mongodb-run-selection)`, `<Plug>(mongodb-hover)` and `<Plug>(mongodb-stop)` targets.
 
 ## Options
 
@@ -91,7 +91,7 @@ To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongod
 | `g:mongodb_uri` | `''` | connection string (see above) |
 | `g:mongodb_mongosh` | `'mongosh'` | path to `mongosh` |
 | `g:mongodb_preview_height` | `15` | height of the results split |
-| `g:mongodb_timeout` | `5000` | ms to wait for metadata during completion/hover |
+| `g:mongodb_timeout` | `5000` | ms hover waits for metadata (completion loads it in the background) |
 | `g:mongodb_autocomplete` | `1` | open the completion menu as you type (otherwise use `<C-x><C-o>`) |
 | `g:mongodb_treesitter` | `1` | use treesitter in Neovim when available |
 | `g:mongodb_no_mappings` | `0` | skip the default mappings |

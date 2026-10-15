@@ -3,7 +3,7 @@
 " Run cmd (a list, no shell) and call Cb(lines, exit_code) when it finishes.
 " stderr is merged into the output.
 function! mongodb#compat#job(cmd, Cb) abort
-  let ctx = {'out': [], 'err': [], 'code': -1, 'closed': 0, 'Cb': a:Cb}
+  let ctx = {'out': [], 'err': [], 'code': -1, 'exited': 0, 'closed': 0, 'Cb': a:Cb}
   if has('nvim')
     let id = jobstart(a:cmd, {
           \ 'stdout_buffered': 1, 'stderr_buffered': 1,
@@ -15,21 +15,21 @@ function! mongodb#compat#job(cmd, Cb) abort
     endif
     return id
   endif
-  " exit_cb and close_cb may arrive in either order.
+  " exit_cb and close_cb may arrive in either order. A killed job exits with -1.
   let job = job_start(a:cmd, {
         \ 'err_io': 'out',
         \ 'out_cb': {ch, msg -> add(ctx.out, msg)},
-        \ 'exit_cb': {job, code -> s:vim_done(ctx, 'code', code)},
-        \ 'close_cb': {ch -> s:vim_done(ctx, 'closed', 1)}})
+        \ 'exit_cb': {job, code -> s:vim_done(ctx, {'code': code, 'exited': 1})},
+        \ 'close_cb': {ch -> s:vim_done(ctx, {'closed': 1})}})
   if job_status(job) ==# 'fail'
     call a:Cb(['failed to start: ' . a:cmd[0]], -1)
   endif
   return job
 endfunction
 
-function! s:vim_done(ctx, key, val) abort
-  let a:ctx[a:key] = a:val
-  if a:ctx.closed && a:ctx.code != -1
+function! s:vim_done(ctx, update) abort
+  call extend(a:ctx, a:update)
+  if a:ctx.closed && a:ctx.exited
     call call(a:ctx.Cb, [s:trim(a:ctx.out), a:ctx.code])
   endif
 endfunction
