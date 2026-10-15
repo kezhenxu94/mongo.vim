@@ -34,13 +34,11 @@
   constructor: (identifier) @type.builtin
   (#any-of? @type.builtin "ObjectId" "Date" "Timestamp" "UUID"))
 
-; Shell helpers: use <db>, show <what>
-(ERROR
-  .
-  (identifier) @keyword
-  (#any-of? @keyword "use" "show"))
+; Shell helpers: use <db>, show <what>, it (matched by line, see ts.lua)
+((identifier) @keyword
+  (#any-of? @keyword "use" "show" "it")
+  (#mongodb-shell? @keyword "cmd"))
 
-(expression_statement
-  .
-  (identifier) @keyword
-  (#any-of? @keyword "use" "show" "it"))
+([(identifier) (binary_expression)] @module
+  (#mongodb-shell? @module "arg")
+  (#set! priority 101))

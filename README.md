@@ -91,6 +91,7 @@ To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongod
 | `g:mongodb_uri` | `''` | connection string (see above) |
 | `g:mongodb_mongosh` | `'mongosh'` | path to `mongosh` |
 | `g:mongodb_preview_width` | half the window | width of the results split, opened to the right |
+| `g:mongodb_echo_script` | `1` | show the executed statements as comments in the results split |
 | `g:mongodb_autocomplete` | `1` | open the completion menu as you type (otherwise use `<C-x><C-o>`) |
 | `g:mongodb_treesitter` | `1` | use treesitter in Neovim when available |
 | `g:mongodb_no_mappings` | `0` | skip the default mappings |

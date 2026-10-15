@@ -41,6 +41,7 @@ function! Test_ftdetect() abort
 endfunction
 
 function! Test_uri() abort
+  call s:buf([])
   call assert_equal($MONGODB_URI, mongodb#uri())
   let g:mongodb_uri = 'mongodb://g'
   call assert_equal('mongodb://g', mongodb#uri())
@@ -174,6 +175,8 @@ function! Test_hover_database_and_field() abort
   call assert_notequal(-1, index(lines, '- orders'))
   call cursor(2, 17)
   call assert_equal('types: number', s:hover()[2])
+  call s:buf(['use test-db'], 1, 7)
+  call assert_equal('**test-db**', s:hover()[0])
 endfunction
 
 function! s:wait_preview() abort
@@ -191,6 +194,9 @@ function! Test_run_statement() abort
   let out = s:wait_preview()
   call assert_match('^// mongodb://', out[0])
   call assert_match('^// \d\+\.\d\+s$', out[1])
+  let [l1, l2] = mongodb#statement_range(12)
+  let i = index(out, '// ' . getline(l1))
+  call assert_equal(map(getline(l1, l2), '"// " . v:val'), out[i : i + l2 - l1])
   call assert_match("_id: 'paid'", join(out))
   call assert_notmatch('// L', join(out))
   call assert_equal('javascript', getbufvar(bufnr('[[]MongoDB]'), '&filetype'))
@@ -203,7 +209,9 @@ function! Test_run_remembers_use() abort
   call setline(1, 'db.getName()')
   call assert_equal('analytics', mongodb#current_db())
   call mongodb#run_statement()
-  call assert_equal('analytics', s:wait_preview()[2])
+  let out = s:wait_preview()
+  call assert_equal(['// use analytics', '// db.getName()'], out[2:3])
+  call assert_equal('analytics', out[-1])
   unlet b:mongodb_db
 endfunction
 
@@ -221,7 +229,7 @@ function! Test_run_file() abort
   call assert_match("// L2: show collections\norders\nproducts\nusers\n// L3: db.users.countDocuments()\n25", join(out, "\n"))
   %MongoRun
   let out = s:wait_preview()
-  call assert_match('exit 1', out[1])
+  call assert_match('^// \d\+\.\d\+s · exit 1$', out[1])
   call assert_match('SyntaxError', join(out))
 endfunction
 
@@ -232,6 +240,7 @@ function! Test_syntax() abort
   call s:buf(['use shop', 'db.users.find({ $or: [{ x: "$y" }] }).sort({}); ObjectId()'])
   let Name = {l, c -> synIDattr(synID(l, c, 1), 'name')}
   call assert_equal('mongodbShell', Name(1, 1))
+  call assert_equal('mongodbShellArg', Name(1, 5))
   call assert_equal('mongodbDb', Name(2, 1))
   call assert_equal('mongodbMethod', Name(2, 10))
   call assert_equal('mongodbOperator', Name(2, 17))
@@ -252,6 +261,12 @@ function! Test_treesitter() abort
   call assert_notequal(-1, index(Caps(1, 30), 'variable.member'))
   call assert_notequal(-1, index(Caps(4, 1), 'type.builtin'))
   call assert_equal([1, 2], luaeval('require("mongodb.ts").range(0, 2)'))
+  call s:buf(['use staging;', 'use production;', 'show dbs', 'const use = 1;'])
+  for l in [1, 2, 3]
+    call assert_notequal(-1, index(Caps(l, 1), 'keyword'), 'line ' . l)
+    call assert_equal('module', Caps(l, 6)[-1], 'line ' . l)
+  endfor
+  call assert_equal(-1, index(Caps(4, 7), 'keyword'))
 endfunction
 
 function! Test_collection_highlight() abort

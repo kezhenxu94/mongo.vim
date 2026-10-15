@@ -6,6 +6,7 @@
 :MongoStop	mongodb.txt	/*:MongoStop*
 b:mongodb_uri	mongodb.txt	/*b:mongodb_uri*
 g:mongodb_autocomplete	mongodb.txt	/*g:mongodb_autocomplete*
+g:mongodb_echo_script	mongodb.txt	/*g:mongodb_echo_script*
 g:mongodb_mongosh	mongodb.txt	/*g:mongodb_mongosh*
 g:mongodb_no_mappings	mongodb.txt	/*g:mongodb_no_mappings*
 g:mongodb_preview_width	mongodb.txt	/*g:mongodb_preview_width*

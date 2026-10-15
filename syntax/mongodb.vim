@@ -9,6 +9,7 @@ let s:docs = mongodb#docs#get()
 
 syn match mongodbShell /^\s*\zs\%(use\|show\)\>/
 syn match mongodbShell /^\s*\zsit\s*$/
+syn match mongodbShellArg /\%(^\s*\%(use\|show\)\s\+\)\@<=[[:alnum:]_-]\+\ze\s*;\=\s*$/
 syn keyword mongodbDb db
 syn match mongodbOperator /\$\h\w*/
 syn match mongodbFieldRef /\$[[:alnum:]_.]\+/ contained containedin=javaScriptStringS,javaScriptStringD
@@ -18,6 +19,7 @@ execute 'syn match mongodbMethod /\.\@1<=\%(' .
       \ '\)\ze\s*(/'
 
 hi def link mongodbShell Statement
+hi def link mongodbShellArg Structure
 hi def link mongodbDb Special
 hi def link mongodbOperator Keyword
 hi def link mongodbFieldRef Identifier

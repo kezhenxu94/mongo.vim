@@ -272,7 +272,8 @@ function! s:execute(stmts) abort
     endif
   endfor
   call mongodb#stop()
-  let run = {'uri': mongodb#uri(), 'start': reltime()}
+  let run = {'uri': mongodb#uri(), 'start': reltime(),
+        \ 'script': get(g:, 'mongodb_echo_script', 1) ? map(split(join(map(copy(a:stmts), 'v:val.text'), "\n"), "\n"), '"// " . v:val') : []}
   let s:run = run
   call s:preview(['// running on ' . s:redact(run.uri) . ' … (<C-c> to cancel)'])
   let run.job = mongodb#compat#job(s:mongosh(run.uri, mongodb#script(a:stmts)),
@@ -280,7 +281,7 @@ function! s:execute(stmts) abort
 endfunction
 
 function! s:header(run, status) abort
-  return ['// ' . s:redact(a:run.uri), printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)]
+  return ['// ' . s:redact(a:run.uri), printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)] + a:run.script
 endfunction
 
 " Ignores runs that were cancelled or replaced by a newer one.
@@ -611,6 +612,11 @@ endfunction
 function! mongodb#hover_lines() abort
   let line = getline('.')
   let col = col('.') - 1
+  " Database names may contain '-', which the word scan below stops at.
+  let [db, s, e] = matchstrpos(line, '^\s*use\s\+\zs[^ ;]\+')
+  if s >= 0 && s <= col && col < e
+    return s:hover_db(db)
+  endif
   let s = col
   while s > 0 && line[s - 1] =~# '[[:alnum:]_$.]'
     let s -= 1
@@ -622,22 +628,19 @@ function! mongodb#hover_lines() abort
   let token = strpart(line, s, e - s)
   let word = matchstr(token, '[[:alnum:]_$]*$')
   let pre = strpart(line, 0, s) . strpart(token, 0, strlen(token) - strlen(word))
-  return s:hover_lines(word, token, pre, line)
+  return s:hover_lines(word, token, pre)
 endfunction
 
 function! s:doc(entry) abort
   return ['```javascript', a:entry[0], '```', a:entry[1]]
 endfunction
 
-function! s:hover_lines(word, token, pre, line) abort
+function! s:hover_lines(word, token, pre) abort
   if empty(a:word)
     return []
   endif
   let docs = mongodb#docs#get()
   let db = mongodb#current_db()
-  if a:line =~# '^\s*use\s\+' . escape(a:word, '.$') . '\>'
-    return s:hover_db(a:word)
-  endif
   if a:pre =~# '\<db\.$'
     if has_key(docs.db, a:word)
       return s:doc(docs.db[a:word])
