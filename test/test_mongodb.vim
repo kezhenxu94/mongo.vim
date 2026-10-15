@@ -13,6 +13,19 @@ function! s:buf(lines, ...) abort
   endif
 endfunction
 
+" Metadata loads in the background: poll until Cond() is true.
+function! s:wait(Cond) abort
+  let start = reltime()
+  while !a:Cond() && reltimefloat(reltime(start)) < 10
+    sleep 20m
+  endwhile
+endfunction
+
+function! s:hover() abort
+  call s:wait({-> mongodb#hover_lines() isnot v:null})
+  return mongodb#hover_lines()
+endfunction
+
 function! s:words(findstart_col) abort
   let start = mongodb#complete(1, '')
   call assert_equal(a:findstart_col, start)
@@ -87,7 +100,7 @@ endfunction
 
 function! Test_complete_databases() abort
   call s:buf(['use sh'], 1, 7)
-  call mongodb#databases()
+  call s:wait({-> !empty(mongodb#databases())})
   call assert_equal(['shop'], s:words(4))
 endfunction
 
@@ -95,12 +108,13 @@ function! Test_complete_does_not_block() abort
   call mongodb#refresh()
   call s:buf(['use sh'], 1, 7)
   call assert_equal([], s:words(4))
+  call s:wait({-> !empty(mongodb#databases())})
   call assert_equal(['shop'], filter(mongodb#databases(), 'v:val ==# "shop"'))
 endfunction
 
 function! Test_complete_collections() abort
   call s:buf(['use shop', 'db.'], 2, 4)
-  call mongodb#databases()
+  call s:wait({-> !empty(mongodb#databases())})
   let words = s:words(3)
   call assert_equal(['orders', 'products', 'users'], words[:2])
   call assert_notequal(-1, index(words, 'getSiblingDB'))
@@ -124,8 +138,7 @@ function! Test_complete_operators() abort
 endfunction
 
 function! Test_complete_fields() abort
-  call mongodb#collection('shop', 'users')
-  call mongodb#collection('shop', 'orders')
+  call s:wait({-> !empty(mongodb#collection('shop', 'users')) && !empty(mongodb#collection('shop', 'orders'))})
   call s:buf(['use shop', 'db.users.find({ addr'], 2, 21)
   call assert_equal(['address', 'address.city', 'address.zip'], s:words(16))
   call s:buf(['use shop', 'db.orders.aggregate([{ $group: { _id: "$st'], 2, 43)
@@ -134,14 +147,21 @@ endfunction
 
 function! Test_hover_docs() abort
   call s:buf(['db.users.find({ age: { $gte: 1 } })'], 1, 11)
-  call assert_equal('find(filter?, projection?, options?)', mongodb#hover_lines()[1])
+  call assert_equal('find(filter?, projection?, options?)', s:hover()[1])
   call cursor(1, 25)
-  call assert_match('greater than or equal', mongodb#hover_lines()[3])
+  call assert_match('greater than or equal', s:hover()[3])
+endfunction
+
+function! Test_hover_does_not_block() abort
+  call mongodb#refresh()
+  call s:buf(['use shop', 'db.users.find()'], 2, 5)
+  call assert_equal(v:null, mongodb#hover_lines())
+  call assert_equal('**shop.users** · 25 documents', s:hover()[0])
 endfunction
 
 function! Test_hover_collection() abort
   call s:buf(['use shop', 'db.users.find()'], 2, 5)
-  let lines = mongodb#hover_lines()
+  let lines = s:hover()
   call assert_equal('**shop.users** · 25 documents', lines[0])
   call assert_match('email_1', join(lines))
   call assert_match('address.city\s\+string', join(lines, "\n"))
@@ -149,11 +169,11 @@ endfunction
 
 function! Test_hover_database_and_field() abort
   call s:buf(['use shop', 'db.users.find({ age: 1 })'], 1, 6)
-  let lines = mongodb#hover_lines()
+  let lines = s:hover()
   call assert_match('^\*\*shop\*\* · \d\+ objects', lines[0])
   call assert_notequal(-1, index(lines, '- orders'))
   call cursor(2, 17)
-  call assert_equal('types: number', mongodb#hover_lines()[2])
+  call assert_equal('types: number', s:hover()[2])
 endfunction
 
 function! s:wait_preview() abort
@@ -235,7 +255,7 @@ endfunction
 
 function! Test_collection_highlight() abort
   call s:buf(['use shop', 'db.users.find()', 'db.nope.find()'])
-  call mongodb#databases()
+  call s:wait({-> !empty(mongodb#databases())})
   call mongodb#highlight()
   let pat = filter(getmatches(), 'v:val.group ==# "mongodbCollection"')[0].pattern
   call assert_match(pat, 'db.users')

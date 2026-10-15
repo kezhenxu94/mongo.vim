@@ -68,8 +68,8 @@ detection use treesitter (see |g:mongodb_treesitter|).
 *g:mongodb_uri*            Connection string. Default ''.
 *b:mongodb_uri*            Per-buffer connection string.
 *g:mongodb_mongosh*        mongosh executable. Default 'mongosh'.
-*g:mongodb_preview_height* Height of the results window. Default 15.
-*g:mongodb_timeout*        Milliseconds hover waits for metadata. Default 5000.
+*g:mongodb_preview_height* Height of the results window. Default: half the
+                           current window.
 *g:mongodb_autocomplete*   Open completion as you type. Default 1.
 *g:mongodb_treesitter*     Use treesitter in Neovim. Default 1.
 *g:mongodb_no_mappings*    Skip default mappings. Default 0.

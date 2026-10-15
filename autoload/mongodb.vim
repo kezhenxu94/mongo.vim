@@ -1,8 +1,9 @@
 " mongodb.vim: run, preview, hover, completion and metadata.
 
-let s:cache = {}        " uri -> {'dbs': {db: [colls]}, 'colls': {'db.coll': info}, 'job': ...}
+let s:cache = {}        " uri -> {'data': {key: decoded result}, 'jobs': {key: job}}
 let s:run = {}          " running query: {'job', 'uri', 'start'}
 let s:preview_buf = -1
+let s:hover_at = []     " cursor position of a hover waiting for metadata
 
 " ---------------------------------------------------------------- settings
 
@@ -312,7 +313,7 @@ function! s:preview(lines) abort
   let winid = bufwinid(s:preview_buf)
   if winid == -1
     let cur = win_getid()
-    execute 'botright ' . get(g:, 'mongodb_preview_height', 15) . 'split'
+    execute 'botright ' . get(g:, 'mongodb_preview_height', max([winheight(0) / 2, 1])) . 'split'
     execute 'buffer ' . s:preview_buf
     setlocal filetype=javascript winfixheight nonumber norelativenumber signcolumn=no
     nnoremap <buffer> <silent> q :close<CR>
@@ -353,7 +354,7 @@ let s:js_db = 'print(EJSON.stringify(db.getSiblingDB(%s).stats()))'
 function! s:meta() abort
   let uri = mongodb#uri()
   if !has_key(s:cache, uri)
-    let s:cache[uri] = {'dbs': {}, 'colls': {}, 'loaded': 0, 'job': 0, 'coll_jobs': {}}
+    let s:cache[uri] = {'data': {}, 'jobs': {}}
   endif
   return s:cache[uri]
 endfunction
@@ -370,36 +371,51 @@ function! s:decode(lines) abort
   return {}
 endfunction
 
-" Run a metadata query; Cb(decoded_dict) on success. Blocks if sync.
-function! s:query(code, Cb, sync) abort
-  let Cb = a:Cb
-  let job = mongodb#compat#job(s:mongosh(mongodb#uri(), a:code),
-        \ {lines, code -> code == 0 && !empty(s:decode(lines)) ? call(Cb, [s:decode(lines)]) : 0})
-  if a:sync
-    call mongodb#compat#wait(job, get(g:, 'mongodb_timeout', 5000))
+" Cached metadata under key, fetched in the background on first use; {} until
+" it arrives. Never blocks.
+function! s:get(key, code) abort
+  let meta = s:meta()
+  if has_key(meta.data, a:key)
+    return meta.data[a:key]
   endif
-  return job
+  if !mongodb#compat#running(get(meta.jobs, a:key, 0))
+    let meta.jobs[a:key] = mongodb#compat#job(s:mongosh(mongodb#uri(), a:code),
+          \ {lines, code -> s:loaded(meta, a:key, lines, code)})
+  endif
+  return get(meta.data, a:key, {})
 endfunction
 
-function! s:load_dbs(sync) abort
-  let meta = s:meta()
-  if meta.loaded
-    return
-  endif
-  if mongodb#compat#running(meta.job)
-    if a:sync
-      call mongodb#compat#wait(meta.job, get(g:, 'mongodb_timeout', 5000))
+function! s:loading(key) abort
+  return mongodb#compat#running(get(s:meta().jobs, a:key, 0))
+endfunction
+
+function! s:loaded(meta, key, lines, code) abort
+  let r = a:code == 0 ? s:decode(a:lines) : {}
+  if empty(r)
+    if !empty(s:hover_at)
+      let s:hover_at = []
+      echohl ErrorMsg | echo 'mongodb: failed to load metadata: ' . get(a:lines, -1, '') | echohl None
     endif
     return
   endif
-  let meta.job = s:query(s:js_dbs, {r -> s:dbs_loaded(meta, r)}, a:sync)
+  let a:meta.data[a:key] = r
+  if a:key ==# 'dbs'
+    call mongodb#highlight_all()
+  endif
+  call s:refresh_menu()
+  call s:hover_resume()
 endfunction
 
-function! s:dbs_loaded(meta, dbs) abort
-  let a:meta.dbs = a:dbs
-  let a:meta.loaded = 1
-  call mongodb#highlight_all()
-  call s:refresh_menu()
+function! s:dbs() abort
+  return s:get('dbs', s:js_dbs)
+endfunction
+
+function! s:coll_key(db, coll) abort
+  return 'coll:' . a:db . '.' . a:coll
+endfunction
+
+function! s:stats(db) abort
+  return s:get('stats:' . a:db, printf(s:js_db, json_encode(a:db)))
 endfunction
 
 function! mongodb#refresh() abort
@@ -407,40 +423,20 @@ function! mongodb#refresh() abort
   if has_key(s:cache, uri)
     call remove(s:cache, uri)
   endif
-  call s:load_dbs(0)
+  call s:dbs()
 endfunction
 
-function! mongodb#databases(...) abort
-  call s:load_dbs(get(a:000, 0, 1))
-  return sort(keys(s:meta().dbs))
+function! mongodb#databases() abort
+  return sort(keys(s:dbs()))
 endfunction
 
-function! mongodb#collections(db, ...) abort
-  call s:load_dbs(get(a:000, 0, 1))
-  return sort(copy(get(s:meta().dbs, a:db, [])))
+function! mongodb#collections(db) abort
+  return sort(copy(get(s:dbs(), a:db, [])))
 endfunction
 
-" Collection info {count, indexes, fields}; fetched once and cached.
-function! mongodb#collection(db, coll, ...) abort
-  let meta = s:meta()
-  let key = a:db . '.' . a:coll
-  if !has_key(meta.colls, key)
-    let job = get(meta.coll_jobs, key, 0)
-    if !mongodb#compat#running(job)
-      let job = s:query(printf(s:js_coll, json_encode(a:db), json_encode(a:coll)),
-            \ {r -> s:coll_loaded(meta, key, r)}, 0)
-      let meta.coll_jobs[key] = job
-    endif
-    if get(a:000, 0, 1)
-      call mongodb#compat#wait(job, get(g:, 'mongodb_timeout', 5000))
-    endif
-  endif
-  return get(meta.colls, key, {})
-endfunction
-
-function! s:coll_loaded(meta, key, info) abort
-  let a:meta.colls[a:key] = a:info
-  call s:refresh_menu()
+" Collection info {count, indexes, fields}.
+function! mongodb#collection(db, coll) abort
+  return s:get(s:coll_key(a:db, a:coll), printf(s:js_coll, json_encode(a:db), json_encode(a:coll)))
 endfunction
 
 " ------------------------------------------------------------- completion
@@ -506,11 +502,11 @@ function! s:candidates(kind) abort
   let db = mongodb#current_db()
   let items = []
   if a:kind ==# 'dbs'
-    call map(mongodb#databases(0), 'add(items, s:item(v:val, "d", "[db]"))')
+    call map(mongodb#databases(), 'add(items, s:item(v:val, "d", "[db]"))')
   elseif a:kind ==# 'show'
     call map(['dbs', 'databases', 'collections', 'tables', 'users'], 'add(items, s:item(v:val, "k", "[show]"))')
   elseif a:kind ==# 'db'
-    call map(mongodb#collections(db, 0), 'add(items, s:item(v:val, "t", "[" . db . "]"))')
+    call map(mongodb#collections(db), 'add(items, s:item(v:val, "t", "[" . db . "]"))')
     call map(sort(keys(docs.db)), 'add(items, s:item(v:val, "f", "[db]", docs.db[v:val]))')
   elseif a:kind ==# 'collection'
     call map(sort(keys(docs.collection)), 'add(items, s:item(v:val, "f", "[collection]", docs.collection[v:val]))')
@@ -521,7 +517,7 @@ function! s:candidates(kind) abort
   elseif a:kind ==# 'field' || a:kind ==# 'fieldref'
     let coll = s:stmt_collection()
     if !empty(coll)
-      let fields = get(mongodb#collection(db, coll, 0), 'fields', {})
+      let fields = get(mongodb#collection(db, coll), 'fields', {})
       call map(sort(keys(fields)), 'add(items, extend(s:item(v:val, "v", join(fields[v:val], "|")), {"user_data": a:kind}))')
     endif
   else
@@ -585,8 +581,15 @@ endfunction
 
 " ------------------------------------------------------------------ hover
 
+" Missing metadata is fetched in the background; the popup opens once it
+" arrives, if the cursor hasn't moved.
 function! mongodb#hover() abort
   let lines = mongodb#hover_lines()
+  if lines is v:null
+    let s:hover_at = [bufnr(), getcurpos()]
+    echo 'mongodb: loading...'
+    return
+  endif
   if empty(lines)
     echo 'mongodb: no documentation for ' . expand('<cword>')
     return
@@ -594,7 +597,17 @@ function! mongodb#hover() abort
   call mongodb#compat#hover(lines)
 endfunction
 
-" Markdown lines describing the word under the cursor.
+function! s:hover_resume() abort
+  let at = s:hover_at
+  let s:hover_at = []
+  if at ==# [bufnr(), getcurpos()] && mode() ==# 'n'
+    echo ''
+    call mongodb#hover()
+  endif
+endfunction
+
+" Markdown lines describing the word under the cursor, or v:null while the
+" metadata they need is still loading.
 function! mongodb#hover_lines() abort
   let line = getline('.')
   let col = col('.') - 1
@@ -653,6 +666,9 @@ function! s:hover_lines(word, token, pre, line) abort
   let coll = s:stmt_collection()
   if !empty(coll)
     let fields = get(mongodb#collection(db, coll), 'fields', {})
+    if s:loading(s:coll_key(db, coll))
+      return v:null
+    endif
     let path = substitute(a:token, '^\$', '', '')
     for f in [path, a:word]
       if has_key(fields, f)
@@ -664,10 +680,17 @@ function! s:hover_lines(word, token, pre, line) abort
 endfunction
 
 function! s:hover_collection(db, coll) abort
-  if index(mongodb#collections(a:db), a:coll) < 0
+  let colls = mongodb#collections(a:db)
+  if s:loading('dbs')
+    return v:null
+  endif
+  if index(colls, a:coll) < 0
     return ['**' . a:db . '.' . a:coll . '**', '', '_collection does not exist (yet)_']
   endif
   let info = mongodb#collection(a:db, a:coll)
+  if s:loading(s:coll_key(a:db, a:coll))
+    return v:null
+  endif
   if empty(info)
     return []
   endif
@@ -684,14 +707,20 @@ function! s:hover_collection(db, coll) abort
 endfunction
 
 function! s:hover_db(db) abort
-  if index(mongodb#databases(), a:db) < 0
+  let dbs = s:dbs()
+  if s:loading('dbs')
+    return v:null
+  endif
+  if !has_key(dbs, a:db)
     return ['**' . a:db . '**', '', '_database does not exist (yet)_']
   endif
-  let st = {}
-  call s:query(printf(s:js_db, json_encode(a:db)), {r -> extend(st, r)}, 1)
+  let st = s:stats(a:db)
+  if s:loading('stats:' . a:db)
+    return v:null
+  endif
   let lines = ['**' . a:db . '**' . (empty(st) ? '' : printf(' · %d objects · %.1f KiB data · %d indexes',
         \ get(st, 'objects', 0), get(st, 'dataSize', 0) / 1024.0, get(st, 'indexes', 0))), '', 'Collections:']
-  for c in mongodb#collections(a:db)
+  for c in sort(copy(dbs[a:db]))
     call add(lines, '- ' . c)
   endfor
   return lines
@@ -710,7 +739,7 @@ function! mongodb#highlight() abort
   endif
   highlight default link mongodbCollection Structure
   let names = {}
-  for [db, colls] in items(s:meta().dbs)
+  for [db, colls] in items(get(s:meta().data, "dbs", {}))
     for c in colls
       if c =~# '^\h\w*$'
         let names[c] = 1
@@ -732,6 +761,6 @@ function! mongodb#highlight_all() abort
 endfunction
 
 function! mongodb#init_buffer() abort
-  call s:load_dbs(0)
+  call s:dbs()
   call mongodb#highlight()
 endfunction

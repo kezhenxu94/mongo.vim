@@ -34,23 +34,6 @@ function! s:vim_done(ctx, update) abort
   endif
 endfunction
 
-" Block until the job ends or timeout_ms passes. Returns 1 if it ended.
-function! mongodb#compat#wait(job, timeout_ms) abort
-  if has('nvim')
-    return jobwait([a:job], a:timeout_ms)[0] != -1
-  endif
-  let start = reltime()
-  while job_status(a:job) ==# 'run' || ch_status(job_getchannel(a:job)) !=# 'closed'
-    if reltimefloat(reltime(start)) * 1000 > a:timeout_ms
-      return 0
-    endif
-    sleep 10m
-  endwhile
-  " Let pending callbacks (exit_cb/close_cb) fire.
-  sleep 1m
-  return 1
-endfunction
-
 function! mongodb#compat#running(job) abort
   if has('nvim')
     return a:job > 0 && jobwait([a:job], 0)[0] == -1

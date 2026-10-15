@@ -90,8 +90,7 @@ To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongod
 | --- | --- | --- |
 | `g:mongodb_uri` | `''` | connection string (see above) |
 | `g:mongodb_mongosh` | `'mongosh'` | path to `mongosh` |
-| `g:mongodb_preview_height` | `15` | height of the results split |
-| `g:mongodb_timeout` | `5000` | ms hover waits for metadata (completion loads it in the background) |
+| `g:mongodb_preview_height` | half the window | height of the results split |
 | `g:mongodb_autocomplete` | `1` | open the completion menu as you type (otherwise use `<C-x><C-o>`) |
 | `g:mongodb_treesitter` | `1` | use treesitter in Neovim when available |
 | `g:mongodb_no_mappings` | `0` | skip the default mappings |
@@ -100,7 +99,7 @@ To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongod
 
 - Queries run as `mongosh <uri> --quiet --eval <script>` in a background job, so the editor never blocks. Arguments are passed as a list and never go through a shell.
 - `--eval` normally prints only the last value, and it rejects shell helpers mixed with code. So the plugin splits the selection into statements, rewrites `use x` and `show dbs` / `show collections` into plain JavaScript, and wraps each expression in `print()`. You get one labelled result per statement, like the interactive shell.
-- Metadata comes from `listDatabases`, `getCollectionNames()`, and a `$sample` of 50 documents per collection, flattened into field paths. It is loaded asynchronously when you open a buffer, and the field schema of a collection is fetched the first time you need it.
+- Metadata comes from `listDatabases`, `getCollectionNames()`, and a `$sample` of 50 documents per collection, flattened into field paths. It is loaded asynchronously when you open a buffer, and the field schema of a collection is fetched the first time you need it. Nothing blocks: completion fills in and hover opens once the data arrives.
 
 ## Running the tests
 
