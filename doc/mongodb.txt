@@ -71,7 +71,7 @@ detection use treesitter (see |g:mongodb_treesitter|).
 *g:mongodb_preview_width*  Width of the results window, opened to the right
                            of the current one. Default: half its width.
 *g:mongodb_echo_script*    Show the executed statements as comments in the
-                           results window, below the uri and the elapsed time.
+                           results window, between the uri and the elapsed time.
                            Default 1.
 *g:mongodb_autocomplete*   Open completion as you type. Default 1.
 *g:mongodb_treesitter*     Use treesitter in Neovim. Default 1.

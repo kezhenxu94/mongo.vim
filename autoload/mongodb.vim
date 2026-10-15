@@ -281,7 +281,7 @@ function! s:execute(stmts) abort
 endfunction
 
 function! s:header(run, status) abort
-  return ['// ' . s:redact(a:run.uri), printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)] + a:run.script
+  return ['// ' . s:redact(a:run.uri)] + a:run.script + [printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)]
 endfunction
 
 " Ignores runs that were cancelled or replaced by a newer one.
