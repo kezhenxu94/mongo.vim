@@ -1,4 +1,4 @@
-*mongodb.txt*  Run MongoDB queries with completion and hover docs
+*mongodb.txt*  Run MongoDB queries with completion and hover docs  *mongo.vim*
 
 ==============================================================================
 CONTENTS                                                      *mongodb*

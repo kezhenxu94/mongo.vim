@@ -1,0 +1,25 @@
+name: helptags
+
+on:
+  push:
+    branches: [main]
+    paths: ['doc/*.txt']
+
+permissions:
+  contents: write
+
+jobs:
+  helptags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y vim
+      - run: vim -Nu NONE -es -c 'helptags doc' -c q
+      - name: Commit doc/tags
+        run: |
+          git add doc/tags
+          git diff --cached --quiet && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: regenerate doc/tags'
+          git push
