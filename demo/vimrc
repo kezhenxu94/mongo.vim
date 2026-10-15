@@ -1,0 +1,8 @@
+" Minimal config for trying the plugin: vim -Nu demo/vimrc demo/demo.mongodb
+set nocompatible
+execute 'set runtimepath^=' . fnameescape(expand('<sfile>:p:h:h'))
+filetype plugin on
+syntax on
+set number laststatus=2 termguicolors background=dark
+silent! colorscheme habamax
+let maplocalleader = ' '

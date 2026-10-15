@@ -1,0 +1,17 @@
+// Run the statement under the cursor with <LocalLeader>rr
+use shop
+
+show collections
+
+db.users.find({ active: true, age: { $gte: 30 } })
+  .sort({ age: -1 })
+  .limit(3)
+
+// Revenue per order status
+db.orders.aggregate([
+  { $match: { createdAt: { $gte: ISODate('2026-02-01') } } },
+  { $group: { _id: '$status', orders: { $sum: 1 }, revenue: { $sum: '$total' } } },
+  { $sort: { revenue: -1 } },
+])
+
+db.products.updateOne({ sku: 'MS-02' }, { $inc: { stock: -1 } })

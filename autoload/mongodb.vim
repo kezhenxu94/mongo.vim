@@ -1,0 +1,687 @@
+" mongodb.vim: run, preview, hover, completion and metadata.
+
+let s:cache = {}        " uri -> {'dbs': {db: [colls]}, 'colls': {'db.coll': info}, 'job': ...}
+let s:run_job = 0
+let s:preview_buf = -1
+
+" ---------------------------------------------------------------- settings
+
+function! mongodb#uri() abort
+  for uri in [get(b:, 'mongodb_uri', ''), get(g:, 'mongodb_uri', ''), $MONGODB_URI]
+    if !empty(uri)
+      return uri
+    endif
+  endfor
+  return 'mongodb://localhost:27017'
+endfunction
+
+function! s:redact(uri) abort
+  return substitute(a:uri, '://[^:@/]*:\zs[^@]*\ze@', '***', '')
+endfunction
+
+" Database in effect at lnum: nearest `use X` above, else the URI path, else test.
+function! mongodb#current_db(...) abort
+  let lnum = get(a:000, 0, line('.'))
+  while lnum > 0
+    let m = matchlist(getline(lnum), '^\s*use\s\+\([^ ;]\+\)')
+    if !empty(m)
+      return m[1]
+    endif
+    let lnum -= 1
+  endwhile
+  let db = matchstr(mongodb#uri(), '^mongodb\%(+srv\)\=://[^/]*/\zs[^?]\+')
+  return empty(db) ? 'test' : db
+endfunction
+
+function! s:mongosh(uri, code) abort
+  return [get(g:, 'mongodb_mongosh', 'mongosh'), a:uri, '--quiet', '--eval', a:code]
+endfunction
+
+" -------------------------------------------------------------- statements
+
+" Split lines into top-level statements: [{'start', 'end', 'text'}].
+" Tracks strings, comments, regex literals and bracket depth. A statement
+" ends at a top-level `;`, or at the end of a line unless the line ends with
+" an operator or the next code line starts with `.`, `?`, `:`, `&&` or `||`.
+function! mongodb#statements(lines, ...) abort
+  let first = get(a:000, 0, 1)
+  let stmts = []
+  let n = len(a:lines)
+  let depth = 0
+  let state = ''
+  let prev = ''
+  let cur = {'start': 0, 'text': []}
+  let i = 0
+  while i < n
+    let line = a:lines[i]
+    let len = strlen(line)
+    let from = 0
+    let last = ''
+    let j = 0
+    while j < len
+      let c = line[j]
+      if state ==# '*'
+        if c ==# '*' && line[j + 1] ==# '/'
+          let state = ''
+          let j += 1
+        endif
+      elseif state !=# ''
+        if c ==# '\'
+          let j += 1
+        elseif c ==# state
+          let state = ''
+        endif
+        let last = c
+      elseif c ==# '/' && line[j + 1] ==# '/'
+        break
+      elseif c ==# '/' && line[j + 1] ==# '*'
+        let state = '*'
+        let j += 1
+      elseif c ==# ';' && depth == 0
+        if cur.start
+          call add(cur.text, strpart(line, from, j - from))
+          call s:push(stmts, cur, i + first)
+        endif
+        let cur = {'start': 0, 'text': []}
+        let from = j + 1
+        let prev = c
+      elseif c !~# '\s'
+        if !cur.start
+          let cur.start = i + first
+          let from = j
+        endif
+        if c =~# '[''"`]'
+          let state = c
+        elseif c ==# '/' && (prev ==# '' || prev =~# '[(,=:[!&|?{};]')
+          let j = s:skip_regex(line, j)
+          let c = '/r'
+        elseif c =~# '[([{]'
+          let depth += 1
+        elseif c =~# '[)\]}]'
+          let depth = max([0, depth - 1])
+        endif
+        let last = c
+        let prev = c
+      endif
+      let j += 1
+    endwhile
+    if state =~# '[''"]'
+      let state = ''
+    endif
+    if cur.start
+      call add(cur.text, strpart(line, from))
+      if depth == 0 && state ==# '' && !s:continues(last, a:lines, i + 1)
+        call s:push(stmts, cur, i + first)
+        let cur = {'start': 0, 'text': []}
+      endif
+    endif
+    let i += 1
+  endwhile
+  if cur.start
+    call s:push(stmts, cur, n + first - 1)
+  endif
+  return stmts
+endfunction
+
+function! s:push(stmts, cur, end) abort
+  let text = trim(join(a:cur.text, "\n"))
+  if !empty(text)
+    call add(a:stmts, {'start': a:cur.start, 'end': a:end, 'text': text})
+  endif
+endfunction
+
+function! s:skip_regex(line, j) abort
+  let j = a:j + 1
+  let cls = 0
+  while j < strlen(a:line)
+    let c = a:line[j]
+    if c ==# '\'
+      let j += 1
+    elseif c ==# '['
+      let cls = 1
+    elseif c ==# ']'
+      let cls = 0
+    elseif c ==# '/' && !cls
+      return j
+    endif
+    let j += 1
+  endwhile
+  return j
+endfunction
+
+function! s:continues(last, lines, next) abort
+  if a:last =~# '^[.,+\-*=&|?:<>!(\[{]$'
+    return 1
+  endif
+  let k = a:next
+  while k < len(a:lines)
+    let l = a:lines[k]
+    if l !~# '^\s*\%(//.*\)\=$'
+      return l =~# '^\s*\%(\.\|?\|:\|&&\|||\)'
+    endif
+    let k += 1
+  endwhile
+  return 0
+endfunction
+
+" Line range [start, end] of the statement under lnum, or [] if none.
+function! mongodb#statement_range(lnum) abort
+  if has('nvim') && get(g:, 'mongodb_treesitter', 1)
+    let r = luaeval('require("mongodb.ts").range(_A[1], _A[2])', [bufnr('%'), a:lnum])
+    if !empty(r)
+      return r
+    endif
+  endif
+  for st in mongodb#statements(getline(1, '$'))
+    if st.start <= a:lnum && a:lnum <= st.end
+      return [st.start, st.end]
+    endif
+  endfor
+  return []
+endfunction
+
+let s:decl = '^\%(const\|let\|var\|function\|async\s\+function\|class\|if\|for\|while\|do\|try\|switch\|return\|throw\|import\|export\)\>\|^{'
+
+" Turn statements into one mongosh --eval script that prints the result of
+" every expression statement, like the interactive shell does.
+function! mongodb#script(stmts) abort
+  let many = len(filter(copy(a:stmts), 'v:val.text !~# ''^use\s'' && v:val.text !~# s:decl')) > 1
+  let out = ['const __mp = (v) => { if (v !== undefined) print(v) };']
+  for st in a:stmts
+    let t = st.text
+    let m = matchlist(t, '^use\s\+\(\S\+\)$')
+    if !empty(m)
+      call add(out, printf('db = db.getSiblingDB(%s);', json_encode(m[1])))
+      continue
+    endif
+    if t =~# '^it$'
+      continue
+    endif
+    if many && t !~# s:decl
+      let head = substitute(split(t, "\n")[0], '\s\+', ' ', 'g')
+      call add(out, printf('print(%s);', json_encode('// L' . st.start . ': ' . strcharpart(head, 0, 70))))
+    endif
+    if t =~# '^show\s\+\%(dbs\|databases\)$'
+      call add(out, 'print(db.adminCommand({ listDatabases: 1, nameOnly: true }).databases.map((d) => d.name).join("\n"));')
+    elseif t =~# '^show\s\+\%(collections\|tables\)$'
+      call add(out, 'print(db.getCollectionNames().sort().join("\n"));')
+    elseif t =~# '^show\s\+users$'
+      call add(out, '__mp(db.getUsers());')
+    elseif t =~# s:decl
+      call add(out, t . ';')
+    else
+      call add(out, "__mp(\n" . t . "\n);")
+    endif
+  endfor
+  return join(out, "\n")
+endfunction
+
+" Statements of lines [l1, l2] plus the nearest `use` above them.
+function! s:with_context(l1, l2) abort
+  let stmts = mongodb#statements(getline(a:l1, a:l2), a:l1)
+  if empty(stmts)
+    return []
+  endif
+  if stmts[0].text !~# '^use\s'
+    let lnum = a:l1 - 1
+    while lnum > 0
+      let m = matchlist(getline(lnum), '^\s*\(use\s\+[^ ;]\+\)')
+      if !empty(m)
+        call insert(stmts, {'start': lnum, 'end': lnum, 'text': m[1]})
+        break
+      endif
+      let lnum -= 1
+    endwhile
+  endif
+  return stmts
+endfunction
+
+" -------------------------------------------------------------------- run
+
+function! mongodb#run(l1, l2) abort
+  call s:execute(s:with_context(a:l1, a:l2))
+endfunction
+
+function! mongodb#run_statement() abort
+  let r = mongodb#statement_range(line('.'))
+  if empty(r)
+    echohl WarningMsg | echo 'mongodb: no statement under cursor' | echohl None
+    return
+  endif
+  call s:execute(s:with_context(r[0], r[1]))
+endfunction
+
+function! s:execute(stmts) abort
+  if empty(a:stmts)
+    echohl WarningMsg | echo 'mongodb: nothing to run' | echohl None
+    return
+  endif
+  call mongodb#stop()
+  let uri = mongodb#uri()
+  let start = reltime()
+  call s:preview(['// running on ' . s:redact(uri) . ' … (:MongoStop to cancel)'])
+  let s:run_job = mongodb#compat#job(s:mongosh(uri, mongodb#script(a:stmts)),
+        \ {lines, code -> s:executed(uri, start, lines, code)})
+endfunction
+
+function! s:executed(uri, start, lines, code) abort
+  let s:run_job = 0
+  let header = printf('// %s · %.2fs%s', s:redact(a:uri),
+        \ reltimefloat(reltime(a:start)), a:code ? ' · exit ' . a:code : '')
+  call s:preview([header] + a:lines)
+endfunction
+
+function! mongodb#stop() abort
+  if mongodb#compat#running(s:run_job)
+    call mongodb#compat#stop(s:run_job)
+  endif
+  let s:run_job = 0
+endfunction
+
+function! s:preview(lines) abort
+  if !bufexists(s:preview_buf)
+    let s:preview_buf = bufadd('[MongoDB]')
+    call bufload(s:preview_buf)
+    call setbufvar(s:preview_buf, '&buftype', 'nofile')
+    call setbufvar(s:preview_buf, '&bufhidden', 'hide')
+    call setbufvar(s:preview_buf, '&swapfile', 0)
+    call setbufvar(s:preview_buf, '&buflisted', 0)
+  endif
+  let winid = bufwinid(s:preview_buf)
+  if winid == -1
+    let cur = win_getid()
+    execute 'botright ' . get(g:, 'mongodb_preview_height', 15) . 'split'
+    execute 'buffer ' . s:preview_buf
+    setlocal filetype=javascript winfixheight nonumber norelativenumber signcolumn=no
+    nnoremap <buffer> <silent> q :close<CR>
+    let winid = win_getid()
+    call win_gotoid(cur)
+  endif
+  call setbufvar(s:preview_buf, '&modifiable', 1)
+  silent call deletebufline(s:preview_buf, 1, '$')
+  call setbufline(s:preview_buf, 1, a:lines)
+  call setbufvar(s:preview_buf, '&modifiable', 0)
+  call win_execute(winid, 'normal! gg')
+endfunction
+
+" --------------------------------------------------------------- metadata
+
+let s:js_dbs = join([
+      \ 'const out = {};',
+      \ 'for (const d of db.adminCommand({ listDatabases: 1, nameOnly: true, authorizedDatabases: true }).databases)',
+      \ '  out[d.name] = db.getSiblingDB(d.name).getCollectionNames();',
+      \ 'print(EJSON.stringify(out));'], "\n")
+
+let s:js_coll = join([
+      \ 'const t = (v) => v === null ? "null" : Array.isArray(v) ? "array" : v instanceof Date ? "date"',
+      \ '  : v && v._bsontype ? v._bsontype : typeof v;',
+      \ 'const s = {};',
+      \ 'const walk = (o, p) => { for (const k of Object.keys(o)) {',
+      \ '  const v = o[k], f = p ? p + "." + k : k, ty = t(v);',
+      \ '  (s[f] = s[f] || {})[ty] = 1; if (ty === "object") walk(v, f); } };',
+      \ 'const c = db.getSiblingDB(%s).getCollection(%s);',
+      \ 'c.aggregate([{ $sample: { size: 50 } }]).forEach((d) => walk(d, ""));',
+      \ 'print(EJSON.stringify({ count: c.estimatedDocumentCount(),',
+      \ '  indexes: c.getIndexes().map((i) => ({ name: i.name, key: i.key })),',
+      \ '  fields: Object.fromEntries(Object.entries(s).map(([k, v]) => [k, Object.keys(v)])) }));'], "\n")
+
+let s:js_db = 'print(EJSON.stringify(db.getSiblingDB(%s).stats()))'
+
+function! s:meta() abort
+  let uri = mongodb#uri()
+  if !has_key(s:cache, uri)
+    let s:cache[uri] = {'dbs': {}, 'colls': {}, 'loaded': 0, 'job': 0}
+  endif
+  return s:cache[uri]
+endfunction
+
+function! s:decode(lines) abort
+  for l in reverse(copy(a:lines))
+    if l =~# '^{'
+      try
+        return json_decode(l)
+      catch
+      endtry
+    endif
+  endfor
+  return {}
+endfunction
+
+" Run a metadata query; Cb(decoded_dict) on success. Blocks if sync.
+function! s:query(code, Cb, sync) abort
+  let Cb = a:Cb
+  let job = mongodb#compat#job(s:mongosh(mongodb#uri(), a:code),
+        \ {lines, code -> code == 0 && !empty(s:decode(lines)) ? call(Cb, [s:decode(lines)]) : 0})
+  if a:sync
+    call mongodb#compat#wait(job, get(g:, 'mongodb_timeout', 5000))
+  endif
+  return job
+endfunction
+
+function! s:load_dbs(sync) abort
+  let meta = s:meta()
+  if meta.loaded
+    return
+  endif
+  if mongodb#compat#running(meta.job)
+    if a:sync
+      call mongodb#compat#wait(meta.job, get(g:, 'mongodb_timeout', 5000))
+    endif
+    return
+  endif
+  let meta.job = s:query(s:js_dbs, {r -> s:dbs_loaded(meta, r)}, a:sync)
+endfunction
+
+function! s:dbs_loaded(meta, dbs) abort
+  let a:meta.dbs = a:dbs
+  let a:meta.loaded = 1
+  call mongodb#highlight_all()
+endfunction
+
+function! mongodb#refresh() abort
+  let uri = mongodb#uri()
+  if has_key(s:cache, uri)
+    call remove(s:cache, uri)
+  endif
+  call s:load_dbs(0)
+endfunction
+
+function! mongodb#databases(...) abort
+  call s:load_dbs(get(a:000, 0, 1))
+  return sort(keys(s:meta().dbs))
+endfunction
+
+function! mongodb#collections(db, ...) abort
+  call s:load_dbs(get(a:000, 0, 1))
+  return sort(copy(get(s:meta().dbs, a:db, [])))
+endfunction
+
+" Collection info {count, indexes, fields}; fetched once and cached.
+function! mongodb#collection(db, coll, ...) abort
+  let meta = s:meta()
+  let key = a:db . '.' . a:coll
+  if !has_key(meta.colls, key)
+    call s:query(printf(s:js_coll, json_encode(a:db), json_encode(a:coll)),
+          \ {r -> extend(meta.colls, {key: r})}, 1)
+  endif
+  return get(meta.colls, key, {})
+endfunction
+
+" ------------------------------------------------------------- completion
+
+function! s:item(word, kind, menu, ...) abort
+  let item = {'word': a:word, 'kind': a:kind, 'menu': a:menu, 'dup': 0}
+  if a:0
+    let item.info = a:1[0] . "\n\n" . a:1[1]
+  endif
+  return item
+endfunction
+
+" Collection referenced by the statement around the cursor, e.g. db.users.find(
+function! s:stmt_collection() abort
+  let [lnum, col] = searchpos('\<db\.\%(\h\w*\|getCollection(\s*[''"][^''"]\+[''"]\s*)\)\.\h\w*\s*(', 'bnW', max([1, line('.') - 50]))
+  if lnum == 0
+    return ''
+  endif
+  let text = strpart(getline(lnum), col - 1)
+  let m = matchlist(text, '^db\.\%(getCollection(\s*[''"]\([^''"]\+\)[''"]\s*)\|\(\h\w*\)\)')
+  return empty(m[1]) ? m[2] : m[1]
+endfunction
+
+function! s:context() abort
+  let pre = strpart(getline('.'), 0, col('.') - 1)
+  let rules = [
+        \ ['^\s*use\s\+\zs[[:alnum:]_-]*$', 'dbs'],
+        \ ['^\s*show\s\+\zs\w*$', 'show'],
+        \ ['\<db\.\zs\w*$', 'db'],
+        \ ['\<db\.\%(\h\w*\|getCollection([^)]*)\)\.\zs\w*$', 'collection'],
+        \ ['[''"]\$\zs[[:alnum:]_.]*$', 'fieldref'],
+        \ ['\$\w*$', 'operator'],
+        \ ['\%()\s*\|^\s*\)\.\zs\w*$', 'cursor'],
+        \ ['\%([{,]\s*[''"]\=\|^\s*[''"]\=\)\zs[[:alnum:]_.]*$', 'field'],
+        \ ]
+  for [pat, kind] in rules
+    let start = match(pre, pat)
+    if start >= 0
+      if kind ==# 'field' && (empty(s:stmt_collection()) || !s:in_braces())
+        continue
+      endif
+      return [start, kind]
+    endif
+  endfor
+  return [match(pre, '\h\w*$'), 'global']
+endfunction
+
+function! s:in_braces() abort
+  let pos = searchpairpos('{', '', '}', 'bnW', '', max([1, line('.') - 50]))
+  return pos[0] > 0
+endfunction
+
+function! mongodb#complete(findstart, base) abort
+  if a:findstart
+    let [start, s:ctx] = s:context()
+    return start < 0 ? -3 : start
+  endif
+  return filter(s:candidates(s:ctx), 'stridx(v:val.word, a:base) == 0')
+endfunction
+
+function! s:candidates(kind) abort
+  let docs = mongodb#docs#get()
+  let db = mongodb#current_db()
+  let items = []
+  if a:kind ==# 'dbs'
+    call map(mongodb#databases(), 'add(items, s:item(v:val, "d", "[db]"))')
+  elseif a:kind ==# 'show'
+    call map(['dbs', 'databases', 'collections', 'tables', 'users'], 'add(items, s:item(v:val, "k", "[show]"))')
+  elseif a:kind ==# 'db'
+    call map(mongodb#collections(db), 'add(items, s:item(v:val, "t", "[" . db . "]"))')
+    call map(sort(keys(docs.db)), 'add(items, s:item(v:val, "f", "[db]", docs.db[v:val]))')
+  elseif a:kind ==# 'collection'
+    call map(sort(keys(docs.collection)), 'add(items, s:item(v:val, "f", "[collection]", docs.collection[v:val]))')
+  elseif a:kind ==# 'cursor'
+    call map(sort(keys(docs.cursor)), 'add(items, s:item(v:val, "f", "[cursor]", docs.cursor[v:val]))')
+  elseif a:kind ==# 'operator'
+    call map(sort(keys(docs.operator)), 'add(items, s:item(v:val, "o", "[op]", docs.operator[v:val]))')
+  elseif a:kind ==# 'field' || a:kind ==# 'fieldref'
+    let coll = s:stmt_collection()
+    if !empty(coll)
+      let fields = get(mongodb#collection(db, coll), 'fields', {})
+      call map(sort(keys(fields)), 'add(items, extend(s:item(v:val, "v", join(fields[v:val], "|")), {"user_data": a:kind}))')
+    endif
+  else
+    for kind in ['bson', 'shell']
+      call map(sort(keys(docs[kind])), 'add(items, s:item(v:val, "f", "[" . kind . "]", docs[kind][v:val]))')
+    endfor
+  endif
+  return items
+endfunction
+
+" Called on TextChangedI: open the menu after `use `, `db.`, `.`, `$` etc.
+function! mongodb#autocomplete() abort
+  if pumvisible() || mode() !=# 'i'
+    return
+  endif
+  let pre = strpart(getline('.'), 0, col('.') - 1)
+  if pre !~# '\%(\.\|\$\|\<use \|\w\w\)$'
+    return
+  endif
+  let [start, kind] = s:context()
+  if start < 0 || (kind ==# 'global' && col('.') - 1 - start < 2)
+    return
+  endif
+  let base = strpart(pre, start)
+  let items = filter(s:candidates(kind), 'stridx(v:val.word, base) == 0 && v:val.word !=# base')
+  if !empty(items)
+    call complete(start + 1, items)
+  endif
+endfunction
+
+" Called on CompleteDone: a dotted field path used as an object key must be
+" quoted, so `address.city` becomes 'address.city'.
+function! mongodb#complete_done() abort
+  let item = get(v:, 'completed_item', {})
+  if get(item, 'user_data', '') !=# 'field' || item.word !~# '\.'
+    return
+  endif
+  let col = col('.') - 1
+  let line = getline('.')
+  let start = col - strlen(item.word)
+  if strpart(line, start, strlen(item.word)) !=# item.word || line[start - 1] =~# '[''"]'
+    return
+  endif
+  call setline('.', strpart(line, 0, start) . "'" . item.word . "'" . strpart(line, col))
+  call cursor(line('.'), col + 3)
+endfunction
+
+" ------------------------------------------------------------------ hover
+
+function! mongodb#hover() abort
+  let lines = mongodb#hover_lines()
+  if empty(lines)
+    echo 'mongodb: no documentation for ' . expand('<cword>')
+    return
+  endif
+  call mongodb#compat#hover(lines)
+endfunction
+
+" Markdown lines describing the word under the cursor.
+function! mongodb#hover_lines() abort
+  let line = getline('.')
+  let col = col('.') - 1
+  let s = col
+  while s > 0 && line[s - 1] =~# '[[:alnum:]_$.]'
+    let s -= 1
+  endwhile
+  let e = col
+  while e < strlen(line) && line[e] =~# '[[:alnum:]_$]'
+    let e += 1
+  endwhile
+  let token = strpart(line, s, e - s)
+  let word = matchstr(token, '[[:alnum:]_$]*$')
+  let pre = strpart(line, 0, s) . strpart(token, 0, strlen(token) - strlen(word))
+  return s:hover_lines(word, token, pre, line)
+endfunction
+
+function! s:doc(entry) abort
+  return ['```javascript', a:entry[0], '```', a:entry[1]]
+endfunction
+
+function! s:hover_lines(word, token, pre, line) abort
+  if empty(a:word)
+    return []
+  endif
+  let docs = mongodb#docs#get()
+  let db = mongodb#current_db()
+  if a:line =~# '^\s*use\s\+' . escape(a:word, '.$') . '\>'
+    return s:hover_db(a:word)
+  endif
+  if a:pre =~# '\<db\.$'
+    if has_key(docs.db, a:word)
+      return s:doc(docs.db[a:word])
+    endif
+    return s:hover_collection(db, a:word)
+  endif
+  let m = matchlist(a:pre, 'getCollection(\s*[''"]$')
+  if !empty(m)
+    return s:hover_collection(db, a:word)
+  endif
+  if a:pre =~# '\.$'
+    for kind in a:pre =~# '\<db\.\h\w*\.$' ? ['collection', 'cursor'] : ['cursor', 'collection']
+      if has_key(docs[kind], a:word)
+        return s:doc(docs[kind][a:word])
+      endif
+    endfor
+  endif
+  if has_key(docs.operator, a:word)
+    return s:doc(docs.operator[a:word])
+  endif
+  for kind in ['bson', 'shell']
+    if has_key(docs[kind], a:word)
+      return s:doc(docs[kind][a:word])
+    endif
+  endfor
+  let coll = s:stmt_collection()
+  if !empty(coll)
+    let fields = get(mongodb#collection(db, coll), 'fields', {})
+    let path = substitute(a:token, '^\$', '', '')
+    for f in [path, a:word]
+      if has_key(fields, f)
+        return ['**' . f . '** in `' . db . '.' . coll . '`', '', 'types: ' . join(fields[f], ' | ')]
+      endif
+    endfor
+  endif
+  return []
+endfunction
+
+function! s:hover_collection(db, coll) abort
+  if index(mongodb#collections(a:db), a:coll) < 0
+    return ['**' . a:db . '.' . a:coll . '**', '', '_collection does not exist (yet)_']
+  endif
+  let info = mongodb#collection(a:db, a:coll)
+  if empty(info)
+    return []
+  endif
+  let lines = ['**' . a:db . '.' . a:coll . '** · ' . info.count . ' documents', '', 'Indexes:']
+  for idx in info.indexes
+    call add(lines, '- `' . idx.name . '` `' . substitute(json_encode(idx.key), '"', '', 'g') . '`')
+  endfor
+  call extend(lines, ['', 'Fields (sampled):', '```javascript'])
+  let width = max(map(keys(info.fields), 'strlen(v:val)'))
+  for f in sort(keys(info.fields))
+    call add(lines, printf('%-*s  %s', width, f, join(info.fields[f], ' | ')))
+  endfor
+  return add(lines, '```')
+endfunction
+
+function! s:hover_db(db) abort
+  if index(mongodb#databases(), a:db) < 0
+    return ['**' . a:db . '**', '', '_database does not exist (yet)_']
+  endif
+  let st = {}
+  call s:query(printf(s:js_db, json_encode(a:db)), {r -> extend(st, r)}, 1)
+  let lines = ['**' . a:db . '**' . (empty(st) ? '' : printf(' · %d objects · %.1f KiB data · %d indexes',
+        \ get(st, 'objects', 0), get(st, 'dataSize', 0) / 1024.0, get(st, 'indexes', 0))), '', 'Collections:']
+  for c in mongodb#collections(a:db)
+    call add(lines, '- ' . c)
+  endfor
+  return lines
+endfunction
+
+" ------------------------------------------------------------- highlight
+
+" Highlight collection names that exist on the server (schema-aware).
+function! mongodb#highlight() abort
+  if exists('w:mongodb_hl')
+    silent! call matchdelete(w:mongodb_hl)
+    unlet w:mongodb_hl
+  endif
+  if &filetype !=# 'mongodb'
+    return
+  endif
+  highlight default link mongodbCollection Structure
+  let names = {}
+  for [db, colls] in items(s:meta().dbs)
+    for c in colls
+      if c =~# '^\h\w*$'
+        let names[c] = 1
+      endif
+    endfor
+  endfor
+  if empty(names)
+    return
+  endif
+  let alt = '\%(' . join(sort(keys(names)), '\|') . '\)'
+  let w:mongodb_hl = matchadd('mongodbCollection',
+        \ '\<db\.\zs' . alt . '\>\|getCollection(\s*[''"]\zs' . alt . '\ze[''"]', 5)
+endfunction
+
+function! mongodb#highlight_all() abort
+  for winid in range(1, winnr('$'))->map('win_getid(v:val)')
+    call win_execute(winid, 'call mongodb#highlight()')
+  endfor
+endfunction
+
+function! mongodb#init_buffer() abort
+  call s:load_dbs(0)
+  call mongodb#highlight()
+endfunction

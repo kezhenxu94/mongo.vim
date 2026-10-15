@@ -1,0 +1,74 @@
+*mongodb.txt*  Run MongoDB queries with completion and hover docs
+
+==============================================================================
+CONTENTS                                                      *mongodb*
+
+  1. Connection ............................ |mongodb-connection|
+  2. Commands and mappings ................. |mongodb-commands|
+  3. Completion and hover .................. |mongodb-completion|
+  4. Options ............................... |mongodb-options|
+
+Works in Vim 9 and Neovim. Requires `mongosh` in $PATH. Buffers named
+*.mongodb, *.mongo.js or *.mongosh get the "mongodb" filetype.
+
+==============================================================================
+1. CONNECTION                                         *mongodb-connection*
+
+The URI is the first non-empty of: |b:mongodb_uri|, |g:mongodb_uri|,
+$MONGODB_URI, "mongodb://localhost:27017".
+
+The current database is the nearest `use <db>` above the cursor, else the
+database in the URI path, else "test".
+
+==============================================================================
+2. COMMANDS AND MAPPINGS                                *mongodb-commands*
+
+:[range]MongoRun          Run the buffer (or range). Default range is the
+                          whole buffer.                     *:MongoRun*
+:MongoRunStatement        Run the (multi-line) statement under the cursor.
+                                                     *:MongoRunStatement*
+:MongoHover               Show docs for the word under the cursor.
+                                                            *:MongoHover*
+:MongoStop                Cancel the running query.          *:MongoStop*
+:MongoRefresh             Reload databases, collections and schemas.
+                                                          *:MongoRefresh*
+:MongoConnect [uri]       Set |g:mongodb_uri| and reload.   *:MongoConnect*
+
+The nearest `use <db>` above the code is applied. Results go to the
+[MongoDB] window (filetype javascript); press q there to close it.
+
+Default buffer mappings (disable with |g:mongodb_no_mappings|):
+  <LocalLeader>rr   <Plug>(mongodb-run-statement)
+  <LocalLeader>rf   <Plug>(mongodb-run-file)
+  {Visual}<LocalLeader>r   <Plug>(mongodb-run-selection)
+  K                 <Plug>(mongodb-hover)
+
+==============================================================================
+3. COMPLETION AND HOVER                               *mongodb-completion*
+
+'omnifunc' is set to mongodb#complete(). It completes, depending on context:
+databases after `use `, collections and db methods after `db.`, collection
+methods after `db.<coll>.`, cursor methods after `).`, operators after `$`,
+and field names (with types, sampled with $sample) inside `{` of a
+`db.<coll>.<method>(` call. With |g:mongodb_autocomplete| the menu opens as
+you type.
+
+K shows: collection count, indexes and schema; database stats and
+collections; method/operator/BSON docs; field types.
+
+In Neovim with a javascript treesitter parser, highlighting and statement
+detection use treesitter (see |g:mongodb_treesitter|).
+
+==============================================================================
+4. OPTIONS                                               *mongodb-options*
+
+*g:mongodb_uri*            Connection string. Default ''.
+*b:mongodb_uri*            Per-buffer connection string.
+*g:mongodb_mongosh*        mongosh executable. Default 'mongosh'.
+*g:mongodb_preview_height* Height of the results window. Default 15.
+*g:mongodb_timeout*        Milliseconds to wait for metadata. Default 5000.
+*g:mongodb_autocomplete*   Open completion as you type. Default 1.
+*g:mongodb_treesitter*     Use treesitter in Neovim. Default 1.
+*g:mongodb_no_mappings*    Skip default mappings. Default 0.
+
+ vim:tw=78:ts=8:ft=help:norl:
