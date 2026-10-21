@@ -70,6 +70,24 @@ MONGODB_URI=mongodb+srv://me@cluster0.example.net/shop vim report.mongodb
 
 Passwords are masked as `***` in the results header.
 
+### Through `kubectl exec`
+
+To reach a server that is only reachable from inside a cluster, set `b:mongodb_mongosh` (or `g:mongodb_mongosh`) to a list. It is used as the command prefix, so the URI is the one the pod sees:
+
+```vim
+let b:mongodb_mongosh = ['kubectl', '--context', 'staging', '-n', 'db', 'exec', 'mongodb-0', '--', 'mongosh']
+let b:mongodb_uri = 'mongodb://localhost:27017/shop'
+```
+
+Runs, completion and hover all go through it, and the results header shows the full command. Don't pass `-t`: a TTY adds escape codes to the output. `-i` isn't needed either, as the script is passed with `--eval`.
+
+To bind a directory of scripts to a pod:
+
+```vim
+autocmd BufRead,BufNewFile ~/work/staging/*.mongodb
+      \ let b:mongodb_mongosh = ['kubectl', '--context', 'staging', 'exec', 'mongodb-0', '--', 'mongosh']
+```
+
 ## Usage
 
 | Mapping | Command | Action |
@@ -89,7 +107,7 @@ To use your own keys, set `g:mongodb_no_mappings = 1` and map the `<Plug>(mongod
 | Option | Default | |
 | --- | --- | --- |
 | `g:mongodb_uri` | `''` | connection string (see above) |
-| `g:mongodb_mongosh` | `'mongosh'` | path to `mongosh` |
+| `g:mongodb_mongosh` | `'mongosh'` | path to `mongosh`, or a command prefix list (see [Through `kubectl exec`](#through-kubectl-exec)); `b:mongodb_mongosh` per buffer |
 | `g:mongodb_preview_width` | half the window | width of the results split, opened to the right |
 | `g:mongodb_echo_script` | `1` | show the executed statements as comments in the results split |
 | `g:mongodb_autocomplete` | `1` | open the completion menu as you type (otherwise use `<C-x><C-o>`) |

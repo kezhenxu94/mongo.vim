@@ -38,8 +38,27 @@ function! mongodb#current_db(...) abort
   return empty(db) ? 'test' : db
 endfunction
 
-function! s:mongosh(uri, code) abort
-  return [get(g:, 'mongodb_mongosh', 'mongosh'), a:uri, '--quiet', '--eval', a:code]
+" The mongosh command as a list: b:mongodb_mongosh, else g:mongodb_mongosh. A
+" list is a prefix, e.g. kubectl exec into a pod.
+function! mongodb#mongosh() abort
+  let cmd = get(b:, 'mongodb_mongosh', get(g:, 'mongodb_mongosh', 'mongosh'))
+  return type(cmd) == v:t_list ? copy(cmd) : [cmd]
+endfunction
+
+function! s:mongosh(cmd, uri, code) abort
+  return a:cmd + [a:uri, '--quiet', '--eval', a:code]
+endfunction
+
+" Where a run goes, for the results header: the URI, after the command when it
+" isn't plain mongosh.
+function! s:target(run) abort
+  return join((len(a:run.cmd) > 1 ? a:run.cmd : []) + [s:redact(a:run.uri)])
+endfunction
+
+" Metadata cache key: the same URI can name different servers through
+" different commands.
+function! s:key() abort
+  return string(mongodb#mongosh()) . mongodb#uri()
 endfunction
 
 " -------------------------------------------------------------- statements
@@ -272,16 +291,16 @@ function! s:execute(stmts) abort
     endif
   endfor
   call mongodb#stop()
-  let run = {'uri': mongodb#uri(), 'start': reltime(),
+  let run = {'cmd': mongodb#mongosh(), 'uri': mongodb#uri(), 'start': reltime(),
         \ 'script': get(g:, 'mongodb_echo_script', 1) ? map(split(join(map(copy(a:stmts), 'v:val.text'), "\n"), "\n"), '"// " . v:val') : []}
   let s:run = run
-  call s:preview(['// running on ' . s:redact(run.uri) . ' … (<C-c> to cancel)'])
-  let run.job = mongodb#compat#job(s:mongosh(run.uri, mongodb#script(a:stmts)),
+  call s:preview(['// running on ' . s:target(run) . ' … (<C-c> to cancel)'])
+  let run.job = mongodb#compat#job(s:mongosh(run.cmd, run.uri, mongodb#script(a:stmts)),
         \ {lines, code -> s:executed(run, lines, code)})
 endfunction
 
 function! s:header(run, status) abort
-  return ['// ' . s:redact(a:run.uri)] + a:run.script + [printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)]
+  return ['// ' . s:target(a:run)] + a:run.script + [printf('// %.2fs%s', reltimefloat(reltime(a:run.start)), a:status)]
 endfunction
 
 " Ignores runs that were cancelled or replaced by a newer one.
@@ -353,11 +372,11 @@ let s:js_coll = join([
 let s:js_db = 'print(EJSON.stringify(db.getSiblingDB(%s).stats()))'
 
 function! s:meta() abort
-  let uri = mongodb#uri()
-  if !has_key(s:cache, uri)
-    let s:cache[uri] = {'data': {}, 'jobs': {}}
+  let key = s:key()
+  if !has_key(s:cache, key)
+    let s:cache[key] = {'data': {}, 'jobs': {}}
   endif
-  return s:cache[uri]
+  return s:cache[key]
 endfunction
 
 function! s:decode(lines) abort
@@ -380,7 +399,7 @@ function! s:get(key, code) abort
     return meta.data[a:key]
   endif
   if !mongodb#compat#running(get(meta.jobs, a:key, 0))
-    let meta.jobs[a:key] = mongodb#compat#job(s:mongosh(mongodb#uri(), a:code),
+    let meta.jobs[a:key] = mongodb#compat#job(s:mongosh(mongodb#mongosh(), mongodb#uri(), a:code),
           \ {lines, code -> s:loaded(meta, a:key, lines, code)})
   endif
   return get(meta.data, a:key, {})
@@ -420,9 +439,9 @@ function! s:stats(db) abort
 endfunction
 
 function! mongodb#refresh() abort
-  let uri = mongodb#uri()
-  if has_key(s:cache, uri)
-    call remove(s:cache, uri)
+  let key = s:key()
+  if has_key(s:cache, key)
+    call remove(s:cache, key)
   endif
   call s:dbs()
 endfunction

@@ -51,6 +51,33 @@ function! Test_uri() abort
   unlet g:mongodb_uri b:mongodb_uri
 endfunction
 
+function! Test_mongosh() abort
+  call s:buf([])
+  call assert_equal(['mongosh'], mongodb#mongosh())
+  let g:mongodb_mongosh = '/opt/mongosh'
+  call assert_equal(['/opt/mongosh'], mongodb#mongosh())
+  let b:mongodb_mongosh = ['kubectl', 'exec', 'mongodb-0', '--', 'mongosh']
+  call assert_equal(['kubectl', 'exec', 'mongodb-0', '--', 'mongosh'], mongodb#mongosh())
+  unlet g:mongodb_mongosh b:mongodb_mongosh
+endfunction
+
+function! Test_mongosh_prefix() abort
+  call s:buf(['use shop', 'db.users.countDocuments()'], 2, 1)
+  let b:mongodb_mongosh = ['env', 'mongosh']
+  call mongodb#run_statement()
+  let out = s:wait_preview()
+  call assert_match('^// env mongosh mongodb://', out[0])
+  call assert_equal('25', out[-1])
+  " Metadata is cached per command: a failing one doesn't see the real server.
+  let b:mongodb_mongosh = ['false']
+  call mongodb#databases()
+  sleep 500m
+  call assert_equal([], mongodb#databases())
+  unlet b:mongodb_mongosh
+  call s:wait({-> !empty(mongodb#databases())})
+  call assert_notequal([], mongodb#databases())
+endfunction
+
 function! Test_current_db() abort
   call s:buf(['use shop', 'db.users.find()', 'use analytics', 'db.events.find()'])
   call assert_equal('shop', mongodb#current_db(2))

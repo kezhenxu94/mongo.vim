@@ -4,6 +4,7 @@
 :MongoRun	mongodb.txt	/*:MongoRun*
 :MongoRunStatement	mongodb.txt	/*:MongoRunStatement*
 :MongoStop	mongodb.txt	/*:MongoStop*
+b:mongodb_mongosh	mongodb.txt	/*b:mongodb_mongosh*
 b:mongodb_uri	mongodb.txt	/*b:mongodb_uri*
 g:mongodb_autocomplete	mongodb.txt	/*g:mongodb_autocomplete*
 g:mongodb_echo_script	mongodb.txt	/*g:mongodb_echo_script*
@@ -17,5 +18,6 @@ mongodb	mongodb.txt	/*mongodb*
 mongodb-commands	mongodb.txt	/*mongodb-commands*
 mongodb-completion	mongodb.txt	/*mongodb-completion*
 mongodb-connection	mongodb.txt	/*mongodb-connection*
+mongodb-kubectl	mongodb.txt	/*mongodb-kubectl*
 mongodb-options	mongodb.txt	/*mongodb-options*
 mongodb.txt	mongodb.txt	/*mongodb.txt*
